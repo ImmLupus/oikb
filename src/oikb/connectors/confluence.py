@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import logging
 import os
 import re
 from typing import Any
@@ -19,6 +20,8 @@ from typing import Any
 import httpx
 
 from oikb.connectors import BaseConnector, ManifestEntry
+
+log = logging.getLogger(__name__)
 
 
 BASE_ENDPOINTS = {
@@ -236,6 +239,7 @@ class ConfluenceConnector(BaseConnector):
         limit = 250
 
         while True:
+            prev_start = start
             params: dict[str, Any] = {
                 "spaceKey": self.space_key,
                 "type": "page",
@@ -256,9 +260,14 @@ class ConfluenceConnector(BaseConnector):
                 dir_path = _ancestor_dir_path_v1(page)
                 self._add_page_entry(entries, page, dir_path, used_keys)
 
-            if len(results) < limit:
-                break
             start += len(results)
+            if start <= prev_start:
+                log.warning(
+                    "Confluence v1 pagination stalled at start=%s (got %d results); stopping",
+                    prev_start,
+                    len(results),
+                )
+                break
 
         entries.sort(key=lambda e: e.display_path)
         return entries
