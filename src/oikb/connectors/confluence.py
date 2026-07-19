@@ -3,6 +3,10 @@
 Supports Confluence REST API v1 (self-hosted) and v2 (Cloud). Pages are
 exported as plain text. Select the API via CONFLUENCE_API_VERSION (default v2).
 
+Optional attachment sync (v1 only) downloads allowed file types as raw bytes
+for Open WebUI / Tika to parse. Enable via ``attachments.enabled`` in
+``.oikb.yaml``.
+
 Auth via CONFLUENCE_URL, CONFLUENCE_USER, and CONFLUENCE_TOKEN env vars:
   - Server/Data Center PAT: set CONFLUENCE_TOKEN only (Bearer auth)
   - Cloud API token: set CONFLUENCE_USER (email) + CONFLUENCE_TOKEN (Basic auth)
@@ -15,11 +19,14 @@ import html
 import logging
 import os
 import re
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 from oikb.connectors import BaseConnector, ManifestEntry
+from oikb.sync import parse_size
 
 log = logging.getLogger(__name__)
 
@@ -29,14 +36,73 @@ BASE_ENDPOINTS = {
     "v2": "/wiki/api/v2",
 }
 
+DEFAULT_ALLOWED_ATTACHMENT_EXTENSIONS: frozenset[str] = frozenset({
+    "pdf", "docx", "doc", "xlsx", "pptx", "odt", "rtf", "html", "txt", "msg", "json",
+})
+DEFAULT_ATTACHMENTS_MAX_SIZE = 20 * 1024 * 1024  # 20mb
+
 
 _INVALID_PATH_CHARS = re.compile(r'[<>:"/\\|?*]')
+
+
+@dataclass(frozen=True, slots=True)
+class AttachmentsConfig:
+    """Attachment sync settings for a Confluence source."""
+
+    enabled: bool = False
+    allowed_extensions: frozenset[str] = DEFAULT_ALLOWED_ATTACHMENT_EXTENSIONS
+    max_size: int = DEFAULT_ATTACHMENTS_MAX_SIZE
+
+
+@dataclass(frozen=True, slots=True)
+class _AttachmentRef:
+    attachment_id: str
+    download_path: str
+    page_id: str
+    filename: str
+
+
+def parse_attachments_config(
+    attachments: dict[str, Any] | None,
+    *,
+    filter_max_size: int | None = None,
+) -> AttachmentsConfig:
+    """Parse the ``attachments`` block from a .oikb.yaml source entry."""
+    if not attachments:
+        return AttachmentsConfig()
+
+    allowed_raw = attachments.get("allowed-extensions")
+    if allowed_raw is not None:
+        allowed_extensions = frozenset(
+            ext.lower().lstrip(".") for ext in allowed_raw if ext
+        )
+    else:
+        allowed_extensions = DEFAULT_ALLOWED_ATTACHMENT_EXTENSIONS
+
+    max_size = parse_size(attachments.get("max-size"))
+    if max_size is None:
+        max_size = filter_max_size
+    if max_size is None:
+        max_size = DEFAULT_ATTACHMENTS_MAX_SIZE
+
+    return AttachmentsConfig(
+        enabled=bool(attachments.get("enabled", False)),
+        allowed_extensions=allowed_extensions,
+        max_size=max_size,
+    )
 
 
 def _sanitize_path_segment(name: str) -> str:
     """Sanitize a single path segment (ancestor dir or filename stem)."""
     cleaned = _INVALID_PATH_CHARS.sub("_", name).strip()
     return cleaned or "_"
+
+
+def _fmt_size(n: int) -> str:
+    for unit, div in (("GB", 1024 ** 3), ("MB", 1024 ** 2), ("KB", 1024)):
+        if n >= div:
+            return f"{n / div:.1f}{unit}"
+    return f"{n}B"
 
 
 def _ancestor_dir_path_v1(page: dict[str, Any]) -> str:
@@ -182,6 +248,7 @@ class ConfluenceConnector(BaseConnector):
         user:        Confluence user email/username (or CONFLUENCE_USER env var).
         token:       API token or PAT (or CONFLUENCE_TOKEN env var).
         api_version: REST API version, "v1" or "v2" (or CONFLUENCE_API_VERSION env var).
+        attachments: Attachment sync settings (from .oikb.yaml).
     """
 
     def __init__(
@@ -191,8 +258,10 @@ class ConfluenceConnector(BaseConnector):
         user: str | None = None,
         token: str | None = None,
         api_version: str | None = None,
+        attachments: AttachmentsConfig | None = None,
     ):
         self.space_key = space_key
+        self._attachments = attachments or AttachmentsConfig()
 
         self._base_url = (base_url or os.environ.get("CONFLUENCE_URL", "")).rstrip("/")
         self._user = user or os.environ.get("CONFLUENCE_USER", "")
@@ -215,9 +284,12 @@ class ConfluenceConnector(BaseConnector):
         if not self._user:
             headers["Authorization"] = f"Bearer {self._token}"
 
+        self._auth = (self._user, self._token) if self._user else None
+        self._download_headers = dict(headers)
+
         self._http = httpx.Client(
             base_url=f"{self._base_url}{BASE_ENDPOINTS[self._api_version]}",
-            auth=(self._user, self._token) if self._user else None,
+            auth=self._auth,
             headers=headers,
             timeout=60.0,
             follow_redirects=False,
@@ -225,9 +297,19 @@ class ConfluenceConnector(BaseConnector):
 
         # (path, filename) -> Confluence page id
         self._page_cache: dict[tuple[str, str], str] = {}
+        self._attachment_cache: dict[tuple[str, str], _AttachmentRef] = {}
+        self._attachments_v2_warned = False
 
     def build_manifest(self) -> list[ManifestEntry]:
         """List all pages in the space and build a manifest."""
+        if self._attachments.enabled and self._api_version == "v2":
+            if not self._attachments_v2_warned:
+                log.warning(
+                    "Confluence attachment sync requires API v1; "
+                    "set CONFLUENCE_API_VERSION=v1. Attachments will be skipped."
+                )
+                self._attachments_v2_warned = True
+
         if self._api_version == "v2":
             return self._build_manifest_v2()
         return self._build_manifest_v1()
@@ -359,12 +441,160 @@ class ConfluenceConnector(BaseConnector):
 
         self._page_cache[(dir_path, filename)] = page_id
 
+        if self._attachments.enabled and self._api_version == "v1":
+            try:
+                attachments = self._list_attachments_v1(page_id)
+            except Exception as exc:
+                log.warning(
+                    "Failed to list attachments for page %s: %s",
+                    page_id,
+                    exc,
+                )
+                return
+
+            page_title = page.get("title", "Untitled")
+            for attachment in attachments:
+                self._add_attachment_entry(
+                    entries,
+                    attachment,
+                    page_dir_path=dir_path,
+                    page_id=page_id,
+                    page_title=page_title,
+                    used_keys=used_keys,
+                )
+
+    def _list_attachments_v1(self, page_id: str) -> list[dict[str, Any]]:
+        """List all attachments for a page (v1 API, paginated)."""
+        all_attachments: list[dict[str, Any]] = []
+        start = 0
+        limit = 250
+
+        while True:
+            prev_start = start
+            params: dict[str, Any] = {
+                "expand": "version",
+                "limit": limit,
+                "start": start,
+            }
+
+            resp = self._http.get(
+                f"/content/{page_id}/child/attachment",
+                params=params,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            results = data.get("results", [])
+            if not results:
+                break
+
+            all_attachments.extend(results)
+
+            start += len(results)
+            if start <= prev_start:
+                log.warning(
+                    "Confluence v1 attachment pagination stalled at start=%s "
+                    "(page %s, got %d results); stopping",
+                    prev_start,
+                    page_id,
+                    len(results),
+                )
+                break
+
+        return all_attachments
+
+    def _add_attachment_entry(
+        self,
+        entries: list[ManifestEntry],
+        attachment: dict[str, Any],
+        *,
+        page_dir_path: str,
+        page_id: str,
+        page_title: str,
+        used_keys: set[tuple[str, str]],
+    ) -> None:
+        original_title = attachment.get("title", "")
+        if not original_title:
+            return
+
+        ext = Path(original_title).suffix.lstrip(".").lower()
+        if ext not in self._attachments.allowed_extensions:
+            log.debug(
+                "skipped attachment %s: extension not in allowlist",
+                original_title,
+            )
+            return
+
+        size = int(attachment.get("extensions", {}).get("fileSize", 0) or 0)
+        if size > self._attachments.max_size:
+            log.warning(
+                "Skipping attachment %s (%s) — exceeds max-size (%s)",
+                original_title,
+                _fmt_size(size),
+                _fmt_size(self._attachments.max_size),
+            )
+            return
+
+        attachment_id = str(attachment["id"])
+        version = attachment.get("version", {}).get("number", 0)
+        checksum = hashlib.sha256(
+            f"{attachment_id}:v{version}".encode()
+        ).hexdigest()[:16]
+
+        download_path = attachment.get("_links", {}).get("download", "")
+        if not download_path:
+            log.warning(
+                "Skipping attachment %s (page %s) — no download link",
+                original_title,
+                page_id,
+            )
+            return
+
+        page_segment = (
+            f"{_sanitize_path_segment(page_title)}_{page_id}"
+        )
+        attach_dir = f"{page_dir_path}/_attachments/{page_segment}"
+
+        filename = _sanitize_path_segment(original_title)
+        key = (attach_dir, filename)
+        if key in used_keys:
+            stem = Path(filename).stem
+            suffix = Path(filename).suffix
+            filename = f"{stem}_{attachment_id}{suffix}"
+            key = (attach_dir, filename)
+        used_keys.add(key)
+
+        entries.append(
+            ManifestEntry(
+                filename=filename,
+                path=attach_dir,
+                checksum=checksum,
+                size=size,
+            )
+        )
+
+        self._attachment_cache[(attach_dir, filename)] = _AttachmentRef(
+            attachment_id=attachment_id,
+            download_path=download_path,
+            page_id=page_id,
+            filename=original_title,
+        )
+
     def read_file(self, path: str, filename: str) -> bytes:
-        """Fetch a page's content and return as text."""
+        """Fetch a page's content or attachment bytes."""
+        attachment_ref = self._attachment_cache.get((path, filename))
+        if attachment_ref is not None:
+            return self._read_attachment(attachment_ref)
+
         page_id = self._page_cache.get((path, filename))
         if not page_id:
-            raise FileNotFoundError(f"Page not found: {path}/{filename}" if path else filename)
+            raise FileNotFoundError(
+                f"File not found: {path}/{filename}" if path else filename
+            )
 
+        return self._read_page(path, filename, page_id)
+
+    def _read_page(self, path: str, filename: str, page_id: str) -> bytes:
         if self._api_version == "v2":
             resp = self._http.get(
                 f"/pages/{page_id}",
@@ -392,6 +622,30 @@ class ConfluenceConnector(BaseConnector):
             filename=filename,
         )
         return text.encode("utf-8")
+
+    def _read_attachment(self, ref: _AttachmentRef) -> bytes:
+        download_url = ref.download_path
+        if download_url.startswith("/"):
+            download_url = f"{self._base_url}{download_url}"
+
+        try:
+            resp = httpx.get(
+                download_url,
+                auth=self._auth,
+                headers=self._download_headers,
+                timeout=60.0,
+                follow_redirects=True,
+            )
+            resp.raise_for_status()
+            return resp.content
+        except Exception as exc:
+            log.warning(
+                "Failed to download attachment %s (page %s): %s",
+                ref.filename,
+                ref.page_id,
+                exc,
+            )
+            raise
 
     def close(self) -> None:
         self._http.close()

@@ -47,6 +47,7 @@ def build_connector_for_entries(
             entry["source"],
             entry.get("branch"),
             entry.get("path"),
+            entry,
         )
 
     parts: list[tuple[BaseConnector, list[ManifestEntry]]] = []
@@ -55,6 +56,7 @@ def build_connector_for_entries(
             entry["source"],
             entry.get("branch"),
             entry.get("path"),
+            entry,
         )
         manifest = connector.build_manifest()
         manifest_filter = manifest_filter_for_entry(entry, max_file_size)

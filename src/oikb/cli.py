@@ -43,7 +43,12 @@ def _make_client(url: str | None, token: str | None):
     )
 
 
-def _resolve_connector(source: str, branch: str | None = None, path: str | None = None):
+def _resolve_connector(
+    source: str,
+    branch: str | None = None,
+    path: str | None = None,
+    entry: dict[str, Any] | None = None,
+):
     """Resolve a source string to the appropriate connector."""
     if source.startswith("github:"):
         from oikb.connectors.github import GitHubConnector, parse_github_source
@@ -81,9 +86,24 @@ def _resolve_connector(source: str, branch: str | None = None, path: str | None 
         return GDriveConnector(folder_id=parsed["folder_id"])
 
     if source.startswith("confluence:"):
-        from oikb.connectors.confluence import ConfluenceConnector, parse_confluence_source
+        from oikb.connectors.confluence import (
+            ConfluenceConnector,
+            parse_attachments_config,
+            parse_confluence_source,
+        )
+        from oikb.sync import parse_size
+
         parsed = parse_confluence_source(source)
-        return ConfluenceConnector(space_key=parsed["space_key"], base_url=parsed.get("base_url"))
+        entry_data = entry or {}
+        attachments = parse_attachments_config(
+            entry_data.get("attachments"),
+            filter_max_size=parse_size(entry_data.get("filter", {}).get("max-size")),
+        )
+        return ConfluenceConnector(
+            space_key=parsed["space_key"],
+            base_url=parsed.get("base_url"),
+            attachments=attachments,
+        )
 
     if source.startswith("notion:"):
         from oikb.connectors.notion import NotionConnector, parse_notion_source

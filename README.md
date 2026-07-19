@@ -83,6 +83,9 @@ sources:
     source: confluence:ENG
     kb-id: 4e7d9a0f-...
     interval: "0 6 * * 1-5"   # overrides default
+    # attachments:              # optional — sync page attachments (v1 API only)
+    #   enabled: true
+    #   max-size: 20mb
 ```
 
 ```bash
@@ -140,7 +143,7 @@ services:
 |---|---|
 | **Code Repos** | GitHub, GitLab, Bitbucket |
 | **Cloud Storage** | S3, GCS, Azure Blob, Dropbox, R2, Google Drive, SharePoint, Egnyte, Oracle Cloud |
-| **Wikis & KBs** | Confluence, Notion, BookStack, Discourse, GitBook, Guru, Outline, Slab, Document360, DokuWiki, Google Sites |
+| **Wikis & KBs** | Confluence (pages + optional attachments), Notion, BookStack, Discourse, GitBook, Guru, Outline, Slab, Document360, DokuWiki, Google Sites |
 | **Ticketing** | Jira, Linear, Zendesk, Freshdesk, Asana, ClickUp, Airtable, ServiceNow, ProductBoard |
 | **Messaging** | Slack, Discord, Microsoft Teams, Gmail, Zulip |
 | **Meetings** | Gong, Fireflies |

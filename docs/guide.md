@@ -247,7 +247,51 @@ Requires `GITLAB_TOKEN` or `BITBUCKET_TOKEN` respectively.
 oikb sync confluence:SPACE_KEY --kb-id your-kb-id
 ```
 
-Requires `CONFLUENCE_URL`, `CONFLUENCE_USERNAME`, and `CONFLUENCE_API_TOKEN`.
+Requires `CONFLUENCE_URL` and `CONFLUENCE_TOKEN`. For Confluence Cloud, also set
+`CONFLUENCE_USER` (your Atlassian account email). For Server/Data Center with a
+PAT, set `CONFLUENCE_TOKEN` only (Bearer auth).
+
+Set `CONFLUENCE_API_VERSION=v1` for self-hosted Server/Data Center (default is
+`v2` for Cloud).
+
+Pages are exported as plain text (`.txt`). To also sync page attachments (PDF,
+DOCX, etc.) as raw files for Open WebUI to parse, enable the `attachments`
+block in `.oikb.yaml` (requires API v1):
+
+```yaml
+sources:
+  - name: oiis
+    source: confluence:OIIS
+    kb-id: your-kb-id
+    attachments:
+      enabled: true
+      allowed-extensions:
+        - pdf
+        - docx
+        - doc
+        - xlsx
+        - pptx
+        - odt
+        - rtf
+        - html
+        - txt
+        - msg
+        - json
+      max-size: 20mb
+```
+
+By default, `attachments.enabled` is `false` (pages only). When enabled, only
+files with extensions in `allowed-extensions` are synced; all other types are
+skipped silently (logged at DEBUG). `max-size` defaults to `20mb`, or falls
+back to `filter.max-size` if set.
+
+Attachment files are stored under
+`{space}/{ancestors}/_attachments/{page_title}_{page_id}/{filename}` in the
+Knowledge Base.
+
+For Open WebUI to extract text from binary attachments, set
+`CONTENT_EXTRACTION_ENGINE=tika` on the Open WebUI instance (Apache Tika parses
+documents server-side).
 
 ### Cloud Storage (S3 / GCS / Azure)
 
