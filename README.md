@@ -72,6 +72,8 @@ defaults:
   notify:
     url: https://hooks.slack.com/services/T.../B.../xxx
     on: error
+  attachments:                  # Confluence: shared file-type allowlist
+    allowed-extensions: [pdf, docx, doc, xlsx, pptx, odt, rtf, html, txt, msg, json]
 
 sources:
   - name: wiki
@@ -83,9 +85,8 @@ sources:
     source: confluence:ENG
     kb-id: 4e7d9a0f-...
     interval: "0 6 * * 1-5"   # overrides default
-    # attachments:              # optional — sync page attachments (v1 API only)
-    #   enabled: true
-    #   max-size: 20mb
+    attachments:
+      enabled: true             # allowed-extensions from defaults.attachments
 ```
 
 ```bash

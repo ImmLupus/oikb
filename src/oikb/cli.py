@@ -95,8 +95,10 @@ def _resolve_connector(
 
         parsed = parse_confluence_source(source)
         entry_data = entry or {}
+        defaults_attachments = entry_data.get("_oikb_defaults", {}).get("attachments")
         attachments = parse_attachments_config(
             entry_data.get("attachments"),
+            defaults_attachments=defaults_attachments,
             filter_max_size=parse_size(entry_data.get("filter", {}).get("max-size")),
         )
         return ConfluenceConnector(
@@ -333,6 +335,17 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+def _prepare_yaml_entries(data: dict) -> list[dict]:
+    """Apply defaults deep-merge and attach defaults for connector resolution."""
+    entries = data.get("sources") or data.get("sync") or []
+    defaults = data.get("defaults", {})
+    if defaults and entries:
+        entries = [_deep_merge(defaults, entry) for entry in entries]
+    for entry in entries:
+        entry["_oikb_defaults"] = defaults
+    return entries
+
+
 def _load_oikb_yaml() -> list[dict] | None:
     """Load .oikb.yaml from the current directory if it exists."""
     import yaml
@@ -350,17 +363,8 @@ def _load_oikb_yaml() -> list[dict] | None:
     # Interpolate environment variables in all string values.
     data = _interpolate_env(data)
 
-    # Prefer sources: (new), fall back to sync: (legacy).
-    entries = data.get("sources") or data.get("sync")
-    if not entries:
-        return None
-
-    # Apply global defaults to each entry.
-    defaults = data.get("defaults", {})
-    if defaults:
-        entries = [_deep_merge(defaults, entry) for entry in entries]
-
-    return entries
+    entries = _prepare_yaml_entries(data)
+    return entries if entries else None
 
 
 def _build_cli_filter(max_file_size: str | None):
@@ -862,10 +866,7 @@ def validate(config_file: str | None, deep: bool):
         with open(config_file) as f:
             data = yaml.safe_load(f)
         data = _interpolate_env(data) if data else data
-        entries = (data.get("sources") or data.get("sync", [])) if data else []
-        defaults = data.get("defaults", {}) if data else {}
-        if defaults and entries:
-            entries = [_deep_merge(defaults, e) for e in entries]
+        entries = _prepare_yaml_entries(data) if data else []
     else:
         entries = _load_oikb_yaml()
 
@@ -951,10 +952,7 @@ def daemon(port: int, no_server: bool, config_file: str | None, log_format: str 
         with open(config_file) as f:
             data = yaml.safe_load(f)
         data = _interpolate_env(data) if data else data
-        entries = (data.get("sources") or data.get("sync", [])) if data else []
-        defaults = data.get("defaults", {}) if data else {}
-        if defaults and entries:
-            entries = [_deep_merge(defaults, e) for e in entries]
+        entries = _prepare_yaml_entries(data) if data else []
     else:
         entries = _load_oikb_yaml()
 

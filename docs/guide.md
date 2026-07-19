@@ -167,6 +167,11 @@ defaults:
   notify:
     url: https://hooks.slack.com/services/T.../B.../xxx
     on: error
+  attachments:                  # Confluence: shared allowed-extensions
+    allowed-extensions:
+      - pdf
+      - docx
+      - doc
 
 sources:
   - name: docs
@@ -177,6 +182,8 @@ sources:
     source: confluence:ENG
     kb-id: def456
     interval: "0 6 * * 1-5"  # overrides default
+    attachments:
+      enabled: true             # allowed-extensions from defaults.attachments
 ```
 
 Per-entry values override defaults. Nested dicts (filter, notify) are deep-merged.
@@ -255,35 +262,40 @@ Set `CONFLUENCE_API_VERSION=v1` for self-hosted Server/Data Center (default is
 `v2` for Cloud).
 
 Pages are exported as plain text (`.txt`). To also sync page attachments (PDF,
-DOCX, etc.) as raw files for Open WebUI to parse, enable the `attachments`
-block in `.oikb.yaml` (requires API v1):
+DOCX, etc.) as raw files for Open WebUI to parse, enable `attachments.enabled`
+per source in `.oikb.yaml` (requires API v1). The list of allowed file
+extensions is configured once in `defaults.attachments`:
 
 ```yaml
+defaults:
+  attachments:
+    allowed-extensions:
+      - pdf
+      - docx
+      - doc
+      - xlsx
+      - pptx
+      - odt
+      - rtf
+      - html
+      - txt
+      - msg
+      - json
+
 sources:
   - name: oiis
     source: confluence:OIIS
     kb-id: your-kb-id
     attachments:
       enabled: true
-      allowed-extensions:
-        - pdf
-        - docx
-        - doc
-        - xlsx
-        - pptx
-        - odt
-        - rtf
-        - html
-        - txt
-        - msg
-        - json
       max-size: 20mb
 ```
 
 By default, `attachments.enabled` is `false` (pages only). When enabled, only
-files with extensions in `allowed-extensions` are synced; all other types are
-skipped silently (logged at DEBUG). `max-size` defaults to `20mb`, or falls
-back to `filter.max-size` if set.
+files with extensions from `defaults.attachments.allowed-extensions` are synced
+(all other types are skipped silently, logged at DEBUG). If
+`allowed-extensions` is omitted, the built-in default list above is used.
+`max-size` defaults to `20mb`, or falls back to `filter.max-size` if set.
 
 Attachment files are stored under
 `{space}/{ancestors}/_attachments/{page_title}_{page_id}/{filename}` in the

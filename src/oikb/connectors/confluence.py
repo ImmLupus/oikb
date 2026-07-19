@@ -65,13 +65,18 @@ class _AttachmentRef:
 def parse_attachments_config(
     attachments: dict[str, Any] | None,
     *,
+    defaults_attachments: dict[str, Any] | None = None,
     filter_max_size: int | None = None,
 ) -> AttachmentsConfig:
-    """Parse the ``attachments`` block from a .oikb.yaml source entry."""
-    if not attachments:
-        return AttachmentsConfig()
+    """Parse attachment sync settings from a .oikb.yaml source entry.
 
-    allowed_raw = attachments.get("allowed-extensions")
+    ``allowed-extensions`` is read only from ``defaults.attachments`` (shared
+    across all sources). Per-source ``attachments`` may set ``enabled`` and
+    ``max-size`` only.
+    """
+    attachments = attachments or {}
+
+    allowed_raw = (defaults_attachments or {}).get("allowed-extensions")
     if allowed_raw is not None:
         allowed_extensions = frozenset(
             ext.lower().lstrip(".") for ext in allowed_raw if ext
