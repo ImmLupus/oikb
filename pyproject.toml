@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.11"
 license = {file = "LICENSE"}
 dependencies = [
+    "beautifulsoup4>=4.12",
     "click>=8.1",
     "croniter>=2.0",
     "httpx>=0.27",

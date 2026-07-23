@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from bs4 import BeautifulSoup, NavigableString
 
 from oikb.connectors import BaseConnector, ManifestEntry
 from oikb.sync import parse_size
@@ -159,12 +160,67 @@ def _parse_api_version(api_version: str | None) -> str:
     return version
 
 
+def _table_to_markdown(table_tag) -> str:
+    """Render a Confluence storage-format <table> as a Markdown table.
+
+    rowspan/colspan are not expanded — each <td>/<th> maps to one cell.
+    """
+    rows: list[list[str]] = []
+    for tr in table_tag.find_all("tr", recursive=True):
+        # Direct td/th only (not from nested tables inside a cell).
+        cells = tr.find_all(["td", "th"], recursive=False)
+        cell_texts = [
+            re.sub(r"\s+", " ", cell.get_text(" ", strip=True))
+            for cell in cells
+        ]
+        if cell_texts:
+            rows.append(cell_texts)
+
+    if not rows:
+        return ""
+
+    def esc(cell: str) -> str:
+        return cell.replace("|", "\\|") if cell else " "
+
+    n_cols = max(len(r) for r in rows)
+    md_lines: list[str] = []
+    for i, row in enumerate(rows):
+        padded = row + [""] * (n_cols - len(row))
+        md_lines.append("| " + " | ".join(esc(c) for c in padded) + " |")
+        if i == 0:
+            md_lines.append("| " + " | ".join(["---"] * n_cols) + " |")
+
+    return "\n" + "\n".join(md_lines) + "\n"
+
+
+def _storage_html_visible_text(storage_html: str) -> str:
+    """Strip tags from storage HTML, preserving top-level tables as Markdown."""
+    if not storage_html:
+        return ""
+
+    soup = BeautifulSoup(storage_html, "html.parser")
+
+    for table in soup.find_all("table"):
+        # Nested tables are rendered inside the parent cell text, not separately.
+        if table.find_parent("table") is not None:
+            continue
+        markdown_table = _table_to_markdown(table)
+        table.replace_with(NavigableString(markdown_table))
+
+    text = soup.get_text(" ", strip=True)
+    text = html.unescape(text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n\s*\n+", "\n\n", text)
+    return text.strip()
+
+
 def _storage_to_text(storage_html: str, title: str = "") -> str:
     """Convert Confluence storage format (XHTML) to plain text.
 
     Confluence link-only index pages store targets in XML attributes
     (ri:content-title, href) rather than visible text. Plain tag stripping
     yields an empty string and Open WebUI rejects the upload with 400.
+    Top-level tables are preserved as Markdown tables.
     """
     parts: list[str] = []
 
@@ -192,10 +248,7 @@ def _storage_to_text(storage_html: str, title: str = "") -> str:
         if value:
             parts.append(value)
 
-    # Remaining visible text after stripping tags/macros.
-    text = re.sub(r"<[^>]+>", " ", storage_html)
-    text = html.unescape(text)
-    text = re.sub(r"\s+", " ", text).strip()
+    text = _storage_html_visible_text(storage_html)
     if text:
         parts.append(text)
 
