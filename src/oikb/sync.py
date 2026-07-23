@@ -340,7 +340,7 @@ def _run_sync_inner(
                     directory_id=directory_id,
                 )
                 if progress is not None:
-                    progress.update(task_id, advance=1, description=f"[cyan]{display}[/cyan]")
+                    progress.update(task_id, advance=1, description=f"[cyan]{filename}[/cyan]")
                 return change_type  # success
             except httpx.HTTPStatusError as e:
                 if e.response.status_code >= 500 and attempt < 2:
@@ -354,7 +354,7 @@ def _run_sync_inner(
                 break
 
         if progress is not None:
-            progress.update(task_id, advance=1, description=f"[red]✗ {display}[/red]")
+            progress.update(task_id, advance=1, description=f"[red]✗ {filename}[/red]")
         else:
             click.echo(click.style(f"  ✗ {display}: {last_err}", fg="red"), err=True)
         return f"{display}: {last_err}"
