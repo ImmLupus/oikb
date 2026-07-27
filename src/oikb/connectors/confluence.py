@@ -27,6 +27,12 @@ import httpx
 from bs4 import BeautifulSoup, NavigableString
 
 from oikb.connectors import BaseConnector, ManifestEntry
+from oikb.drawio import (
+    attachment_extension,
+    drawio_manifest_filename,
+    drawio_to_text,
+    is_drawio_filename,
+)
 from oikb.sync import parse_size
 
 log = logging.getLogger(__name__)
@@ -39,6 +45,7 @@ BASE_ENDPOINTS = {
 
 DEFAULT_ALLOWED_ATTACHMENT_EXTENSIONS: frozenset[str] = frozenset({
     "pdf", "docx", "doc", "xlsx", "pptx", "odt", "rtf", "html", "txt", "msg", "json",
+    "drawio",
 })
 DEFAULT_ATTACHMENTS_MAX_SIZE = 20 * 1024 * 1024  # 20mb
 
@@ -575,7 +582,7 @@ class ConfluenceConnector(BaseConnector):
         if not original_title:
             return
 
-        ext = Path(original_title).suffix.lstrip(".").lower()
+        ext = attachment_extension(original_title)
         if ext not in self._attachments.allowed_extensions:
             log.debug(
                 "skipped attachment %s: extension not in allowlist",
@@ -613,7 +620,12 @@ class ConfluenceConnector(BaseConnector):
         )
         attach_dir = f"{page_dir_path}/_attachments/{page_segment}"
 
-        filename = _sanitize_path_segment(original_title)
+        if is_drawio_filename(original_title):
+            filename = _sanitize_path_segment(
+                drawio_manifest_filename(original_title)
+            )
+        else:
+            filename = _sanitize_path_segment(original_title)
         key = (attach_dir, filename)
         if key in used_keys:
             stem = Path(filename).stem
@@ -695,7 +707,13 @@ class ConfluenceConnector(BaseConnector):
                 follow_redirects=True,
             )
             resp.raise_for_status()
-            return resp.content
+            content = resp.content
+            if (
+                self._api_version == "v1"
+                and is_drawio_filename(ref.filename)
+            ):
+                return drawio_to_text(content).encode("utf-8")
+            return content
         except Exception as exc:
             log.warning(
                 "Failed to download attachment %s (page %s): %s",

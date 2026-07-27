@@ -73,7 +73,7 @@ defaults:
     url: https://hooks.slack.com/services/T.../B.../xxx
     on: error
   attachments:                  # Confluence: shared file-type allowlist
-    allowed-extensions: [pdf, docx, doc, xlsx, pptx, odt, rtf, html, txt, msg, json]
+    allowed-extensions: [pdf, docx, doc, xlsx, pptx, odt, rtf, html, txt, msg, json, drawio]
 
 sources:
   - name: wiki
