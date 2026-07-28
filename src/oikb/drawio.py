@@ -6,6 +6,7 @@ import base64
 import re
 import zlib
 from pathlib import Path
+from typing import Any
 from urllib.parse import unquote
 
 _PERCENT_BYTE = re.compile(r"%[0-9A-Fa-f]{2}")
@@ -21,9 +22,44 @@ def is_drawio_filename(filename: str) -> bool:
     return lower.endswith(".drawio") or lower.endswith(".drawio.xml")
 
 
-def attachment_extension(filename: str) -> str:
-    """File extension for allowlist checks (drawio covers ``.drawio.xml``)."""
+def extract_attachment_label_names(attachment: dict[str, Any]) -> frozenset[str]:
+    """Label names from Confluence attachment ``metadata.labels`` (lowercase)."""
+    labels_meta = attachment.get("metadata", {}).get("labels", {})
+    results = labels_meta.get("results", [])
+    names: set[str] = set()
+    if not isinstance(results, list):
+        return frozenset()
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        for key in ("name", "label"):
+            value = item.get(key)
+            if value:
+                names.add(str(value).lower())
+    return frozenset(names)
+
+
+def has_drawio_label(labels: frozenset[str]) -> bool:
+    return "drawio" in labels
+
+
+def is_drawio_attachment(
+    filename: str,
+    labels: frozenset[str] | None = None,
+) -> bool:
     if is_drawio_filename(filename):
+        return True
+    if labels and has_drawio_label(labels):
+        return True
+    return False
+
+
+def attachment_extension(
+    filename: str,
+    labels: frozenset[str] | None = None,
+) -> str:
+    """File extension for allowlist checks (drawio covers ``.drawio.xml`` and label)."""
+    if is_drawio_attachment(filename, labels):
         return "drawio"
     return Path(filename).suffix.lstrip(".").lower()
 

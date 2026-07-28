@@ -31,7 +31,8 @@ from oikb.drawio import (
     attachment_extension,
     drawio_manifest_filename,
     drawio_to_text,
-    is_drawio_filename,
+    extract_attachment_label_names,
+    is_drawio_attachment,
 )
 from oikb.sync import parse_size
 
@@ -68,6 +69,7 @@ class _AttachmentRef:
     download_path: str
     page_id: str
     filename: str
+    is_drawio: bool = False
 
 
 def parse_attachments_config(
@@ -537,7 +539,7 @@ class ConfluenceConnector(BaseConnector):
         while True:
             prev_start = start
             params: dict[str, Any] = {
-                "expand": "version",
+                "expand": "version,metadata.labels",
                 "limit": limit,
                 "start": start,
             }
@@ -582,7 +584,8 @@ class ConfluenceConnector(BaseConnector):
         if not original_title:
             return
 
-        ext = attachment_extension(original_title)
+        label_names = extract_attachment_label_names(attachment)
+        ext = attachment_extension(original_title, label_names)
         if ext not in self._attachments.allowed_extensions:
             log.debug(
                 "skipped attachment %s: extension not in allowlist",
@@ -620,7 +623,7 @@ class ConfluenceConnector(BaseConnector):
         )
         attach_dir = f"{page_dir_path}/_attachments/{page_segment}"
 
-        if is_drawio_filename(original_title):
+        if is_drawio_attachment(original_title, label_names):
             filename = _sanitize_path_segment(
                 drawio_manifest_filename(original_title)
             )
@@ -648,6 +651,7 @@ class ConfluenceConnector(BaseConnector):
             download_path=download_path,
             page_id=page_id,
             filename=original_title,
+            is_drawio=is_drawio_attachment(original_title, label_names),
         )
 
     def read_file(self, path: str, filename: str) -> bytes:
@@ -708,10 +712,7 @@ class ConfluenceConnector(BaseConnector):
             )
             resp.raise_for_status()
             content = resp.content
-            if (
-                self._api_version == "v1"
-                and is_drawio_filename(ref.filename)
-            ):
+            if self._api_version == "v1" and ref.is_drawio:
                 return drawio_to_text(content).encode("utf-8")
             return content
         except Exception as exc:
