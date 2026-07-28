@@ -14,7 +14,7 @@ class OikbClient:
     All methods are synchronous — httpx handles connection pooling internally.
     """
 
-    def __init__(self, base_url: str, token: str, timeout: float = 120.0):
+    def __init__(self, base_url: str, token: str, timeout: float = 600.0):
         self._base_url = base_url.rstrip("/")
         self._http = httpx.Client(
             base_url=f"{self._base_url}/api/v1",
@@ -72,8 +72,21 @@ class OikbClient:
         kb_id: str,
         file_hash: str,
         directory_id: str | None = None,
+        *,
+        sync: bool = True,
     ) -> dict[str, Any]:
-        """POST /files/ — upload a single file to the KB."""
+        """POST /files/ — upload a single file to the KB.
+
+        When ``sync`` is True (default), the request includes
+        ``process_in_background=false`` so Open WebUI completes extraction,
+        chunking, embedding, and vector-store writes before responding. That
+        makes client-side upload concurrency an effective throttle on server
+        load.
+
+        When ``sync`` is False, the query parameter is omitted and the server
+        may return as soon as the file is stored, with RAG processing in a
+        background task (legacy fire-and-forget behavior).
+        """
 
         metadata: dict[str, Any] = {
             "knowledge_id": kb_id,
@@ -82,8 +95,13 @@ class OikbClient:
         if directory_id:
             metadata["directory_id"] = directory_id
 
+        params: dict[str, str] | None = None
+        if sync:
+            params = {"process_in_background": "false"}
+
         resp = self._http.post(
             "/files/",
+            params=params,
             files={"file": (filename, file_content)},
             data={"metadata": json.dumps(metadata)},
         )
