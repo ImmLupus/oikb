@@ -366,9 +366,12 @@ class ConfluenceConnector(BaseConnector):
         self._page_cache: dict[tuple[str, str], str] = {}
         self._attachment_cache: dict[tuple[str, str], _AttachmentRef] = {}
         self._attachments_v2_warned = False
+        self._attachment_skip_count = 0
 
     def build_manifest(self) -> list[ManifestEntry]:
         """List all pages in the space and build a manifest."""
+        self._attachment_skip_count = 0
+
         if self._attachments.enabled and self._api_version == "v2":
             if not self._attachments_v2_warned:
                 log.warning(
@@ -378,8 +381,18 @@ class ConfluenceConnector(BaseConnector):
                 self._attachments_v2_warned = True
 
         if self._api_version == "v2":
-            return self._build_manifest_v2()
-        return self._build_manifest_v1()
+            entries = self._build_manifest_v2()
+        else:
+            entries = self._build_manifest_v1()
+
+        if self._attachment_skip_count > 0:
+            log.warning(
+                "Skipped %d attachment(s) due to filtering "
+                "(extension allowlist, max-size, or missing download link)",
+                self._attachment_skip_count,
+            )
+
+        return entries
 
     def _build_manifest_v1(self) -> list[ManifestEntry]:
         entries: list[ManifestEntry] = []
@@ -587,20 +600,12 @@ class ConfluenceConnector(BaseConnector):
         label_names = extract_attachment_label_names(attachment)
         ext = attachment_extension(original_title, label_names)
         if ext not in self._attachments.allowed_extensions:
-            log.debug(
-                "skipped attachment %s: extension not in allowlist",
-                original_title,
-            )
+            self._attachment_skip_count += 1
             return
 
         size = int(attachment.get("extensions", {}).get("fileSize", 0) or 0)
         if size > self._attachments.max_size:
-            log.warning(
-                "Skipping attachment %s (%s) — exceeds max-size (%s)",
-                original_title,
-                _fmt_size(size),
-                _fmt_size(self._attachments.max_size),
-            )
+            self._attachment_skip_count += 1
             return
 
         attachment_id = str(attachment["id"])
@@ -611,11 +616,7 @@ class ConfluenceConnector(BaseConnector):
 
         download_path = attachment.get("_links", {}).get("download", "")
         if not download_path:
-            log.warning(
-                "Skipping attachment %s (page %s) — no download link",
-                original_title,
-                page_id,
-            )
+            self._attachment_skip_count += 1
             return
 
         page_segment = (
