@@ -7,6 +7,10 @@ Optional attachment sync (v1 only) downloads allowed file types as raw bytes
 for Open WebUI / Tika to parse. Enable via ``attachments.enabled`` in
 ``.oikb.yaml``.
 
+For API v1, page export also lists attachment filenames in the page text.
+Filter extensions via ``CONFLUENCE_PAGE_ATTACHMENT_EXTENSIONS`` (comma-separated;
+defaults to the built-in attachment allowlist when unset).
+
 Auth via CONFLUENCE_URL, CONFLUENCE_USER, and CONFLUENCE_TOKEN env vars:
   - Server/Data Center PAT: set CONFLUENCE_TOKEN only (Bearer auth)
   - Cloud API token: set CONFLUENCE_USER (email) + CONFLUENCE_TOKEN (Basic auth)
@@ -49,6 +53,7 @@ DEFAULT_ALLOWED_ATTACHMENT_EXTENSIONS: frozenset[str] = frozenset({
     "drawio",
 })
 DEFAULT_ATTACHMENTS_MAX_SIZE = 20 * 1024 * 1024  # 20mb
+PAGE_ATTACHMENT_EXTENSIONS_ENV = "CONFLUENCE_PAGE_ATTACHMENT_EXTENSIONS"
 
 
 _INVALID_PATH_CHARS = re.compile(r'[<>:"/\\|?*]')
@@ -104,6 +109,21 @@ def parse_attachments_config(
         enabled=bool(attachments.get("enabled", False)),
         allowed_extensions=allowed_extensions,
         max_size=max_size,
+    )
+
+
+def _page_attachment_extensions_from_env() -> frozenset[str]:
+    """Allowed extensions for attachment names embedded in page text."""
+    raw = os.environ.get(PAGE_ATTACHMENT_EXTENSIONS_ENV)
+    if raw is None:
+        return DEFAULT_ALLOWED_ATTACHMENT_EXTENSIONS
+    raw = raw.strip()
+    if not raw:
+        return DEFAULT_ALLOWED_ATTACHMENT_EXTENSIONS
+    return frozenset(
+        part.lower().lstrip(".")
+        for part in re.split(r"[,;]+", raw)
+        if part.strip()
     )
 
 
@@ -273,6 +293,30 @@ def _storage_to_text(storage_html: str, title: str = "") -> str:
         return "\n".join(lines)
 
     return title.strip()
+
+
+def _format_page_attachment_section(
+    attachments: list[dict[str, Any]],
+    *,
+    allowed_extensions: frozenset[str],
+) -> str:
+    """Build a markdown list of attachment filenames for page export."""
+    titles: list[str] = []
+    seen: set[str] = set()
+    for attachment in attachments:
+        name = (attachment.get("title") or "").strip()
+        if not name or name in seen:
+            continue
+        label_names = extract_attachment_label_names(attachment)
+        ext = attachment_extension(name, label_names)
+        if ext not in allowed_extensions:
+            continue
+        seen.add(name)
+        titles.append(name)
+    if not titles:
+        return ""
+    lines = "\n".join(f"- {name}" for name in sorted(titles, key=str.lower))
+    return f"\n\n## Attachments\n\n{lines}"
 
 
 def _finalize_page_text(
@@ -687,6 +731,24 @@ class ConfluenceConnector(BaseConnector):
         storage = data.get("body", {}).get("storage", {}).get("value", "")
         title = data.get("title", "")
         text = _storage_to_text(storage, title=title)
+
+        if self._api_version == "v1":
+            try:
+                attachments = self._list_attachments_v1(page_id)
+            except Exception as exc:
+                log.warning(
+                    "Failed to list attachments for page %s: %s",
+                    page_id,
+                    exc,
+                )
+                attachments = []
+            attachment_section = _format_page_attachment_section(
+                attachments,
+                allowed_extensions=_page_attachment_extensions_from_env(),
+            )
+            if attachment_section:
+                text = text + attachment_section
+
         text = _finalize_page_text(
             text,
             title=title,
