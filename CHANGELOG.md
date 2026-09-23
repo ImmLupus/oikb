@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **Confluence → Qdrant sparse BM25**: when `QDRANT_URL` is set, text documents
+  from Confluence are upserted into a sparse BM25 collection (created on demand)
+  before upload to Open WebUI. Russian text is lemmatized with pymorphy3, then
+  embedded via FastEmbed `Qdrant/bm25`. Optional extra: `pip install oikb[qdrant]`.
+  Env: `QDRANT_URL`, `QDRANT_API_KEY`, `QDRANT_BM25_COLLECTION` (default `oikb-bm25`).
+
 ## [0.3.6] - 2026-05-28
 
 ### Added

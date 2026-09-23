@@ -327,10 +327,21 @@ def _run_sync_inner(
         if not manifest_entry:
             return f"File not in manifest: {display}"
 
+        from oikb.qdrant_bm25 import index_before_upload
+
         last_err: Exception | None = None
         for attempt in range(3):
             try:
                 content = connector.read_file(path, filename)
+                # Confluence → sparse BM25 in Qdrant before Open WebUI upload.
+                index_before_upload(
+                    connector,
+                    content=content,
+                    path=path,
+                    filename=filename,
+                    file_hash=manifest_entry.checksum,
+                    kb_id=kb_id,
+                )
                 directory_id = directory_map.get(path) if path else None
                 client.upload_file(
                     file_content=content,

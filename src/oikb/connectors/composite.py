@@ -30,8 +30,12 @@ class CompositeConnector(BaseConnector):
     def build_manifest(self) -> list[ManifestEntry]:
         return list(self._manifest)
 
+    def get_connector(self, path: str, filename: str) -> BaseConnector | None:
+        """Return the source connector that owns this manifest path."""
+        return self._route.get((path, filename))
+
     def read_file(self, path: str, filename: str) -> bytes:
-        connector = self._route.get((path, filename))
+        connector = self.get_connector(path, filename)
         if not connector:
             display = f"{path}/{filename}" if path else filename
             raise FileNotFoundError(f"File not in merged manifest: {display}")

@@ -305,6 +305,25 @@ For Open WebUI to extract text from binary attachments, set
 `CONTENT_EXTRACTION_ENGINE=tika` on the Open WebUI instance (Apache Tika parses
 documents server-side).
 
+#### Sparse BM25 in Qdrant (optional)
+
+When `QDRANT_URL` is set, each Confluence text document is indexed into a
+sparse BM25 Qdrant collection **before** upload to Open WebUI. The collection
+is created automatically if missing. Text is lemmatized with **pymorphy3**
+(preferred for Russian over Snowball stemming), then embedded with
+`Qdrant/bm25` (`modifier=IDF`).
+
+```bash
+pip install oikb[qdrant]
+
+export QDRANT_URL=http://localhost:6333
+# optional:
+export QDRANT_API_KEY=...
+export QDRANT_BM25_COLLECTION=oikb-bm25   # default
+```
+
+Binary attachments are skipped for BM25 (pages/`.txt` only).
+
 ### Cloud Storage (S3 / GCS / Azure)
 
 ```bash

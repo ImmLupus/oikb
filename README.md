@@ -159,7 +159,7 @@ oikb sync s3://bucket/prefix --kb-id your-kb-id
 oikb sync servicenow:incident --kb-id your-kb-id
 ```
 
-Some connectors need an optional extra: `pip install oikb[gdrive]`, `pip install oikb[s3]`, or `pip install oikb[all]` for everything.
+Some connectors need an optional extra: `pip install oikb[gdrive]`, `pip install oikb[s3]`, `pip install oikb[qdrant]` (Confluence sparse BM25), or `pip install oikb[all]` for everything.
 
 ## Filters
 
