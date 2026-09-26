@@ -2,6 +2,7 @@
 
 Supports Confluence REST API v1 (self-hosted) and v2 (Cloud). Pages are
 exported as plain text. Select the API via CONFLUENCE_API_VERSION (default v2).
+For v1, the page manifest is built via CQL ``/content/search``.
 
 Optional attachment sync (v1 only) downloads allowed file types as raw bytes
 for Open WebUI / Tika to parse. Enable via ``attachments.enabled`` in
@@ -23,6 +24,7 @@ import html
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -54,6 +56,11 @@ DEFAULT_ALLOWED_ATTACHMENT_EXTENSIONS: frozenset[str] = frozenset({
 })
 DEFAULT_ATTACHMENTS_MAX_SIZE = 20 * 1024 * 1024  # 20mb
 PAGE_ATTACHMENT_EXTENSIONS_ENV = "CONFLUENCE_PAGE_ATTACHMENT_EXTENSIONS"
+
+# Transient gateway / server errors worth retrying (e.g. deep offset pagination).
+_RETRYABLE_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
+_HTTP_MAX_ATTEMPTS = 5
+_HTTP_RETRY_BASE_DELAY_S = 10.0
 
 
 _INVALID_PATH_CHARS = re.compile(r'[<>:"/\\|?*]')
@@ -412,6 +419,52 @@ class ConfluenceConnector(BaseConnector):
         self._attachments_v2_warned = False
         self._attachment_skip_count = 0
 
+    def _get(self, path: str, *, params: dict[str, Any] | None = None) -> httpx.Response:
+        """GET with retries on transient failures; does not reset caller pagination."""
+        attempt = 0
+        while True:
+            try:
+                resp = self._http.get(path, params=params)
+            except httpx.RequestError as exc:
+                if attempt >= _HTTP_MAX_ATTEMPTS - 1:
+                    raise
+                delay = _HTTP_RETRY_BASE_DELAY_S * (2 ** attempt)
+                log.warning(
+                    "Confluence %s request error (attempt %d/%d): %s; "
+                    "retrying in %.0fs (params=%s)",
+                    path,
+                    attempt + 1,
+                    _HTTP_MAX_ATTEMPTS,
+                    exc,
+                    delay,
+                    params,
+                )
+                time.sleep(delay)
+                attempt += 1
+                continue
+
+            if (
+                resp.status_code in _RETRYABLE_STATUS_CODES
+                and attempt < _HTTP_MAX_ATTEMPTS - 1
+            ):
+                delay = _HTTP_RETRY_BASE_DELAY_S * (2 ** attempt)
+                log.warning(
+                    "Confluence %s returned %s (attempt %d/%d); "
+                    "retrying in %.0fs (params=%s)",
+                    path,
+                    resp.status_code,
+                    attempt + 1,
+                    _HTTP_MAX_ATTEMPTS,
+                    delay,
+                    params,
+                )
+                time.sleep(delay)
+                attempt += 1
+                continue
+
+            resp.raise_for_status()
+            return resp
+
     def build_manifest(self) -> list[ManifestEntry]:
         """List all pages in the space and build a manifest."""
         self._attachment_skip_count = 0
@@ -439,24 +492,26 @@ class ConfluenceConnector(BaseConnector):
         return entries
 
     def _build_manifest_v1(self) -> list[ManifestEntry]:
+        """List pages via Confluence CQL search (API v1 ``/content/search``)."""
         entries: list[ManifestEntry] = []
         used_keys: set[tuple[str, str]] = set()
         start = 0
         limit = 250
+        # ORDER BY keeps offset pagination stable across pages.
+        space_lit = self.space_key.replace("\\", "\\\\").replace('"', '\\"')
+        cql = f'space = "{space_lit}" AND type = page ORDER BY id'
 
         while True:
             prev_start = start
             params: dict[str, Any] = {
-                "spaceKey": self.space_key,
-                "type": "page",
+                "cql": cql,
                 "limit": limit,
                 "start": start,
                 "expand": "ancestors,version",
             }
 
-            resp = self._http.get("/content", params=params)
-            resp.raise_for_status()
-            data = resp.json()
+            # Retry stays on this `start` offset; pagination advances only on success.
+            data = self._get("/content/search", params=params).json()
 
             results = data.get("results", [])
             if not results:
@@ -469,7 +524,7 @@ class ConfluenceConnector(BaseConnector):
             start += len(results)
             if start <= prev_start:
                 log.warning(
-                    "Confluence v1 pagination stalled at start=%s (got %d results); stopping",
+                    "Confluence v1 CQL pagination stalled at start=%s (got %d results); stopping",
                     prev_start,
                     len(results),
                 )
@@ -487,12 +542,10 @@ class ConfluenceConnector(BaseConnector):
             if cursor:
                 params["cursor"] = cursor
 
-            resp = self._http.get(
+            data = self._get(
                 f"/spaces/{self.space_key}/pages",
                 params=params,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            ).json()
 
             all_pages.extend(data.get("results", []))
 
@@ -601,12 +654,10 @@ class ConfluenceConnector(BaseConnector):
                 "start": start,
             }
 
-            resp = self._http.get(
+            data = self._get(
                 f"/content/{page_id}/child/attachment",
                 params=params,
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            ).json()
 
             results = data.get("results", [])
             if not results:
@@ -715,18 +766,15 @@ class ConfluenceConnector(BaseConnector):
 
     def _read_page(self, path: str, filename: str, page_id: str) -> bytes:
         if self._api_version == "v2":
-            resp = self._http.get(
+            data = self._get(
                 f"/pages/{page_id}",
                 params={"body-format": "storage"},
-            )
+            ).json()
         else:
-            resp = self._http.get(
+            data = self._get(
                 f"/content/{page_id}",
                 params={"expand": "body.storage,version"},
-            )
-
-        resp.raise_for_status()
-        data = resp.json()
+            ).json()
 
         storage = data.get("body", {}).get("storage", {}).get("value", "")
         title = data.get("title", "")
