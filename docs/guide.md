@@ -10,6 +10,7 @@ A complete guide to syncing content into Open WebUI Knowledge Bases.
 - [Getting Started](#getting-started)
   - [Your First Sync](#your-first-sync)
   - [Watch Mode](#watch-mode)
+  - [Pre-built Manifests](#pre-built-manifests)
 - [Configuration File](#configuration-file)
   - [Generating with oikb init](#generating-with-oikb-init)
   - [Manual Setup](#manual-setup)
@@ -115,6 +116,34 @@ oikb watch ./docs --kb-id your-kb-id
 ```
 
 Uses filesystem events (not polling) so changes are picked up instantly.
+
+### Pre-built Manifests
+
+You can split scanning from uploading. Useful when building the manifest is slow (large Confluence spaces, many remote sources) and you want to reuse the scan across runs, or build manifests offline before syncing.
+
+**Build only** — scan sources, write one JSON file per Knowledge Base under `./manifest/`, then exit (no Open WebUI API calls):
+
+```bash
+oikb sync --build-manifest
+oikb sync --build-manifest --name docs   # one .oikb.yaml entry
+oikb sync ./docs --kb-id your-kb-id --build-manifest
+```
+
+Files are named by kb-id, e.g. `./manifest/8f3a2b1c-....json`. Filters from `.oikb.yaml` / `--max-file-size` are applied before writing.
+
+**Sync from saved manifests** — skip scanning; load `./manifest/<kb-id>.json` and run the usual diff → upload:
+
+```bash
+oikb sync --from-manifest
+oikb sync --from-manifest --name docs
+oikb sync ./docs --kb-id your-kb-id --from-manifest
+```
+
+Connectors are still used to read file contents for upload; only the manifest build step is skipped.
+
+Without `--build-manifest` / `--from-manifest`, sync behaves as before (scan + upload in one pass). The two flags are mutually exclusive.
+
+In the official Docker image (`WORKDIR /data`), manifests are stored at `/data/manifest/`. Mount a volume on `/data` (or `/data/manifest`) if you need them to persist.
 
 ---
 
@@ -767,6 +796,9 @@ spec:
 oikb init                           Generate .oikb.yaml interactively
 oikb sync [SOURCE]                  Incremental sync
 oikb sync --dry-run                 Preview without uploading
+oikb sync --build-manifest          Write ./manifest/<kb-id>.json (no sync)
+oikb sync --from-manifest           Sync using saved manifests
+oikb sync --name NAME               Target one .oikb.yaml entry
 oikb sync --max-file-size 50mb      Skip large files
 oikb sync --concurrency 4           Parallel uploads
 oikb sync --scan-secrets            Block files with credentials
@@ -814,6 +846,12 @@ You're running `oikb sync` without arguments and there's no `.oikb.yaml` in the 
 - Enable concurrent uploads: `--concurrency 4` or `concurrency: 4` in yaml
 - Set `filter.max-size: 50mb` to skip large binaries
 - Use `filter.exclude` to skip unnecessary files
+- Pre-build manifests once, then sync repeatedly without re-scanning:
+
+```bash
+oikb sync --build-manifest
+oikb sync --from-manifest
+```
 
 ### Daemon won't start
 

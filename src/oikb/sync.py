@@ -135,12 +135,13 @@ def run_sync(
     quiet: bool = False,
     manifest_filter: Callable[[list[ManifestEntry]], list[ManifestEntry]] | None = None,
     concurrency: int = 1,
+    preloaded_manifest: list[ManifestEntry] | None = None,
 ) -> SyncResult:
     """Execute a full incremental sync.
 
     Steps:
-      1. Build manifest from connector
-      2. Apply optional manifest filter
+      1. Build manifest from connector (or use preloaded_manifest)
+      2. Apply optional manifest filter (skipped when preloaded)
       3. POST manifest to /sync/diff
       4. Cleanup stale files (delete before upload)
       5. Create missing directories
@@ -152,7 +153,7 @@ def run_sync(
     try:
         return _run_sync_inner(
             client, connector, kb_id, dry_run, verbose, quiet,
-            manifest_filter, concurrency, result,
+            manifest_filter, concurrency, result, preloaded_manifest,
         )
     finally:
         connector.close()
@@ -168,12 +169,19 @@ def _run_sync_inner(
     manifest_filter: Callable[[list[ManifestEntry]], list[ManifestEntry]] | None,
     concurrency: int,
     result: SyncResult,
+    preloaded_manifest: list[ManifestEntry] | None = None,
 ) -> SyncResult:
     """Inner sync logic, separated for clean connector cleanup."""
     show_progress = not quiet and not dry_run
 
-    # ── 1. Build manifest ──────────────────────────────────────
-    if show_progress:
+    # ── 1. Build (or load) manifest ─────────────────────────────
+    if preloaded_manifest is not None:
+        manifest = list(preloaded_manifest)
+        if show_progress:
+            _console.print(f"  [dim]{len(manifest)} files from manifest[/dim]")
+        elif verbose:
+            click.echo(f"  {len(manifest)} files from manifest", err=True)
+    elif show_progress:
         with _console.status("[bold blue]Scanning source..."):
             manifest = connector.build_manifest()
         _console.print(f"  [dim]{len(manifest)} files found[/dim]")
@@ -184,8 +192,8 @@ def _run_sync_inner(
         if verbose:
             click.echo(f"  {len(manifest)} files found", err=True)
 
-    # ── 2. Apply filter ────────────────────────────────────────
-    if manifest_filter:
+    # ── 2. Apply filter (already applied when loading from file) ─
+    if manifest_filter and preloaded_manifest is None:
         manifest = manifest_filter(manifest)
         if show_progress:
             _console.print(f"  [dim]{len(manifest)} files after filtering[/dim]")

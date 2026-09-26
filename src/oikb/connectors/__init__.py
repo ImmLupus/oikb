@@ -31,6 +31,15 @@ class ManifestEntry:
             "size": self.size,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict) -> ManifestEntry:
+        return cls(
+            filename=data["filename"],
+            path=data.get("path", ""),
+            checksum=data["checksum"],
+            size=int(data["size"]),
+        )
+
     @property
     def display_path(self) -> str:
         """Human-readable relative path."""

@@ -21,6 +21,10 @@ oikb sync github:owner/repo --kb-id your-kb-id
 
 # Preview first (no upload)
 oikb sync ./docs --kb-id your-kb-id --dry-run
+
+# Build manifests only, then sync from them (skips re-scanning)
+oikb sync --build-manifest
+oikb sync --from-manifest
 ```
 
 For multi-source, scheduled sync, or daemon mode — run `oikb init` to generate a `.oikb.yaml` config file, then `oikb daemon`.
@@ -33,6 +37,8 @@ For multi-source, scheduled sync, or daemon mode — run `oikb init` to generate
 |---|---|
 | `oikb init` | Generate `.oikb.yaml` interactively |
 | `oikb sync <source>` | Incremental sync to a Knowledge Base |
+| `oikb sync --build-manifest` | Scan sources and write `./manifest/<kb-id>.json` (no upload) |
+| `oikb sync --from-manifest` | Sync using saved manifests (skip scanning) |
 | `oikb watch <dir>` | Watch for changes and auto-sync |
 | `oikb daemon` | Long-lived scheduler with HTTP API |
 | `oikb diff <source>` | Preview what a sync would do |
@@ -94,6 +100,19 @@ oikb sync --name wiki          # CLI: sync a specific entry
 curl -X POST /sync/wiki        # API: trigger by name
 curl -X POST /sync/8f3a2b1c-.. # API: trigger by kb-id
 ```
+
+### Pre-built manifests
+
+Split scanning from uploading when source enumeration is expensive (e.g. large Confluence spaces):
+
+```bash
+oikb sync --build-manifest              # write ./manifest/<kb-id>.json per KB
+oikb sync --build-manifest --name wiki  # one entry only
+oikb sync --from-manifest               # sync using saved files
+oikb sync --from-manifest --name wiki
+```
+
+Without these flags, sync builds the manifest and uploads in one pass as before. In Docker the working directory is `/data`, so manifests land at `/data/manifest/`.
 
 ### Docker
 
@@ -236,10 +255,12 @@ oikb history --clear --days 7   # Prune old entries
 
 ## How It Works
 
-1. Scan source, compute checksums
+1. Scan source, compute checksums (or load a saved manifest with `--from-manifest`)
 2. Send manifest to Open WebUI `/sync/diff`
 3. Delete stale files, create missing directories
 4. Upload only new and modified files
+
+Use `--build-manifest` to stop after step 1 and write manifests to `./manifest/`.
 
 ## License
 

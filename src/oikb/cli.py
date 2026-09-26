@@ -387,6 +387,16 @@ def _build_cli_filter(max_file_size: str | None):
 @click.option("--name", default=None, help="Target a specific entry in .oikb.yaml by name/kb-id.")
 @click.option("--concurrency", default=1, type=int, help="Parallel upload workers (default: 1, sequential).")
 @click.option("--max-file-size", default=None, help="Skip files larger than this (e.g. 50mb, 1gb).")
+@click.option(
+    "--build-manifest",
+    is_flag=True,
+    help="Only build and write manifests to ./manifest/ (one file per KB). No sync.",
+)
+@click.option(
+    "--from-manifest",
+    is_flag=True,
+    help="Skip scanning; load manifests from ./manifest/ and sync.",
+)
 @click.pass_context
 def sync(
     ctx: click.Context,
@@ -401,14 +411,29 @@ def sync(
     name: str | None,
     concurrency: int,
     max_file_size: str | None,
+    build_manifest: bool,
+    from_manifest: bool,
 ):
     """Incremental sync from a source to a Knowledge Base.
 
     SOURCE can be a local directory, github:owner/repo, or s3://bucket/prefix.
     If omitted, reads .oikb.yaml from the current directory.
+
+    \b
+    Manifest workflow:
+      oikb sync --build-manifest          # write ./manifest/<kb-id>.json
+      oikb sync --from-manifest           # sync using saved manifests
+      oikb sync --build-manifest --name X # one KB only
     """
     quiet = ctx.obj.get("quiet", False)
     from oikb.sync import run_sync
+
+    if build_manifest and from_manifest:
+        click.echo(
+            click.style("Use either --build-manifest or --from-manifest, not both.", fg="red"),
+            err=True,
+        )
+        sys.exit(1)
 
     # ── .oikb.yaml mode ──
     if source is None:
@@ -428,7 +453,12 @@ def sync(
                 sys.exit(1)
 
         has_errors = False
-        from oikb.kb_sync import group_entries_by_kb, run_entries_sync, sources_label
+        from oikb.kb_sync import (
+            build_and_save_manifest,
+            group_entries_by_kb,
+            run_entries_sync,
+            sources_label,
+        )
 
         for group in group_entries_by_kb(entries):
             entry_kb = group[0].get("kb-id")
@@ -445,11 +475,25 @@ def sync(
                 continue
 
             try:
+                if build_manifest:
+                    if not quiet:
+                        click.echo(f"\n{'─' * 40}")
+                        click.echo(f"Building manifest: {label} → {entry_kb}")
+                    path, total = build_and_save_manifest(
+                        group,
+                        resolve_connector=_resolve_connector,
+                        max_file_size=max_file_size,
+                    )
+                    if not quiet:
+                        click.echo(f"  Wrote {path} ({total} files)")
+                    continue
+
                 client = _make_client(url, token)
 
                 if not quiet:
                     click.echo(f"\n{'─' * 40}")
-                    click.echo(f"Syncing: {label} → {entry_kb}")
+                    mode = "Syncing from manifest" if from_manifest else "Syncing"
+                    click.echo(f"{mode}: {label} → {entry_kb}")
 
                 result = run_entries_sync(
                     client,
@@ -460,6 +504,7 @@ def sync(
                     quiet=quiet,
                     concurrency=concurrency,
                     max_file_size=max_file_size,
+                    from_manifest=from_manifest,
                 )
 
                 if not quiet:
@@ -484,16 +529,69 @@ def sync(
         click.echo(click.style("--kb-id is required when syncing a single source.", fg="red"), err=True)
         sys.exit(1)
 
+    from oikb.kb_sync import (
+        load_manifest_file,
+        manifest_path_for_kb,
+        save_manifest_file,
+    )
+    from oikb.connectors import ManifestEntry
+
+    # --build-manifest: scan and write, no API needed.
+    if build_manifest:
+        try:
+            connector = _resolve_connector(source, branch, source_path)
+        except (FileNotFoundError, ImportError, ValueError) as e:
+            click.echo(click.style(f"Error: {e}", fg="red"), err=True)
+            sys.exit(1)
+
+        try:
+            if not quiet:
+                click.echo(f"Building manifest: {source} → {kb}")
+            manifest = connector.build_manifest()
+            filt = _build_cli_filter(max_file_size)
+            if filt:
+                manifest = filt(manifest)
+            path = manifest_path_for_kb(kb, name=name)
+            save_manifest_file(
+                path,
+                kb,
+                [{
+                    "name": name,
+                    "source": source,
+                    "entries": [e.to_dict() for e in manifest],
+                }],
+            )
+            if not quiet:
+                click.echo(f"  Wrote {path} ({len(manifest)} files)")
+        except Exception as e:
+            click.echo(click.style(f"Failed: {e}", fg="red"), err=True)
+            sys.exit(1)
+        finally:
+            connector.close()
+        return
+
     try:
         connector = _resolve_connector(source, branch, source_path)
     except (FileNotFoundError, ImportError, ValueError) as e:
         click.echo(click.style(f"Error: {e}", fg="red"), err=True)
         sys.exit(1)
 
+    preloaded = None
+    if from_manifest:
+        try:
+            saved = load_manifest_file(manifest_path_for_kb(kb, name=name))
+            part = saved["parts"][0]
+            preloaded = [ManifestEntry.from_dict(e) for e in part.get("entries", [])]
+        except Exception as e:
+            click.echo(click.style(f"Error: {e}", fg="red"), err=True)
+            connector.close()
+            sys.exit(1)
+
     try:
         client = _make_client(url, token)
     except ValueError as e:
         click.echo(click.style(str(e), fg="red"), err=True)
+        connector.close()
         sys.exit(1)
 
     try:
@@ -505,7 +603,8 @@ def sync(
             verbose=verbose,
             quiet=quiet,
             concurrency=concurrency,
-            manifest_filter=_build_cli_filter(max_file_size),
+            manifest_filter=None if from_manifest else _build_cli_filter(max_file_size),
+            preloaded_manifest=preloaded,
         )
     except Exception as e:
         click.echo(click.style(f"Sync failed: {e}", fg="red"), err=True)
